@@ -1,16 +1,16 @@
 #include "register_types.h"
 
 #include "core/object/class_db.h"
-#include "summator.h"
+#include "gaussian_splats.h"
 
-void initialize_summator_module(ModuleInitializationLevel p_level) {
+void initialize_gaussian_splats_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	ClassDB::register_class<Summator>();
+	ClassDB::register_class<GaussianSplats>();
 }
 
-void uninitialize_summator_module(ModuleInitializationLevel p_level) {
+void uninitialize_gaussian_splats_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
