@@ -1,16 +1,19 @@
 #include "register_types.h"
 
-#include "core/object/class_db.h"
-#include "gaussian_splats.h"
+#include "resource_importer_supersplat_ply.h"
+#include "core/io/resource_importer.h"
 
-void initialize_gaussian_splats_module(ModuleInitializationLevel p_level) {
+void initialize_gaussian_splats_module(const ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
-	ClassDB::register_class<GaussianSplats>();
+
+	Ref<ResourceImporterSupersplatPly> supersplatPlyImporter;
+	supersplatPlyImporter.instantiate();
+	ResourceFormatImporter::get_singleton()->add_importer(supersplatPlyImporter);
 }
 
-void uninitialize_gaussian_splats_module(ModuleInitializationLevel p_level) {
+void uninitialize_gaussian_splats_module(const ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
