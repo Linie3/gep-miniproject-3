@@ -46,7 +46,7 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     multiMesh->set_instance_count(1);
 
     Basis basis = Basis(Quaternion(Vector3(1, 0, 0), Math::PI * 0.25f));
-    basis.scale(Vector3(2, 3, 2));
+    basis.scale(Vector3(1, 5, 1));
 
     Transform3D transform;
     transform.basis = basis;
@@ -55,7 +55,7 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     multiMesh->set_instance_transform(0, transform);
     multiMesh->set_instance_color(0, Color(0.0, 0.5, 0.5, 1.0));
 
-    multiMesh->set_instance_custom_data(0, Color(0.0, 0.0, 0.0, 0.0));
+    multiMesh->set_instance_custom_data(0, Color(1.0, 5.0, 1.0, 0.0));
 
     int num_coefficients = 15;
     int bytes_per_pixel = 3 * sizeof(float);
@@ -127,10 +127,69 @@ varying vec4 v_custom;
 varying vec3 v_world_view_dir; // Passed from vertex
 
 void vertex() {
-    v_custom = INSTANCE_CUSTOM;
+v_custom = INSTANCE_CUSTOM;
+    COLOR = COLOR;
 
-    vec3 world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-    v_world_view_dir = CAMERA_POSITION_WORLD - world_pos;
+    // 1. Get the instance center in View Space (Camera Relative)
+    vec4 instance_view_pos = VIEW_MATRIX * MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
+
+    // Pass raw world view direction for the SH color module
+    vec3 instance_world_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    v_world_view_dir = CAMERA_POSITION_WORLD - instance_world_pos;
+
+    // 2. Extract full 3D Scale and World Rotation from the Model Matrix
+    vec3 scale = INSTANCE_CUSTOM.rgb;
+    mat3 R = mat3(
+        normalize(MODEL_MATRIX[0].xyz),
+        normalize(MODEL_MATRIX[1].xyz),
+        normalize(MODEL_MATRIX[2].xyz)
+    );
+
+    // 3. Compute the 3D Covariance Matrix (Sigma = R * S * S^T * R^T)
+    mat3 S = mat3(
+        vec3(scale.x * scale.x, 0.0, 0.0),
+        vec3(0.0, scale.y * scale.y, 0.0),
+        vec3(0.0, 0.0, scale.z * scale.z)
+    );
+    mat3 sigma3D = R * S * transpose(R);
+
+    // 4. Project the 3D Covariance Matrix into 2D Camera View Space
+    mat3 W = mat3(VIEW_MATRIX);
+    mat3 sigma2D = W * sigma3D * transpose(W);
+
+    // 5. Extract the 2D Screen-Space Ellipse Bounds
+    // Ensure safety filters to prevent infinite thinness or collapsing lines
+    float cov_xx = sigma2D[0][0] + 0.05;
+    float cov_xy = sigma2D[0][1];
+    float cov_yy = sigma2D[1][1] + 0.05;
+
+    // Solve eigenvalues for 2D tilt/stretch factors
+    float det = cov_xx * cov_yy - cov_xy * cov_xy;
+    float mid = 0.5 * (cov_xx + cov_yy);
+    float lambda1 = mid + sqrt(max(0.0, mid * mid - det));
+    float lambda2 = mid - sqrt(max(0.0, mid * mid - det));
+
+    // Calculate major/minor radii of the screen ellipse footprint
+    // 2.0x multiplier aligns it nicely with our QuadMesh boundaries
+    float radius_x = sqrt(max(0.001, lambda1)) * 2.0;
+    float radius_y = sqrt(max(0.001, lambda2)) * 2.0;
+
+    // Compute 2D screen rotation angle
+    float angle = 0.5 * atan(2.0 * cov_xy, cov_xx - cov_yy);
+    mat2 rot2D = mat2(
+        vec2(cos(angle), -sin(angle)),
+        vec2(sin(angle),  cos(angle))
+    );
+
+    // 6. Apply deformation to our local flat quad layout
+    vec2 local_deformed = rot2D * (VERTEX.xy * vec2(radius_x, radius_y));
+    vec3 billboarded_vertex = vec3(local_deformed, 0.0);
+
+    // 7. CRITICAL FIX: Bypass Godot's vertex double-multiplication trap!
+    // We compute the final position in View Space and transform it directly
+    // to Clip Space using PROJECTION_MATRIX, skipping local-space alterations.
+    vec3 final_view_pos = instance_view_pos.xyz + billboarded_vertex;
+    POSITION = PROJECTION_MATRIX * vec4(final_view_pos, 1.0);
 }
 
 vec3 eval_sh(vec3 dir, vec3 dc, int id)
