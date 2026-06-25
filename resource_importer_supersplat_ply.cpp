@@ -1,5 +1,7 @@
 #include "resource_importer_supersplat_ply.h"
+#include <string>
 
+#include "core/io/file_access.h"
 #include "core/io/resource_saver.h"
 #include "scene/resources/image_texture.h"
 #include "scene/resources/3d/primitive_meshes.h"
@@ -38,6 +40,31 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants,
     List<String> *r_gen_files, Variant *r_metadata) {
 
+    const Ref<FileAccess> file = FileAccess::open(p_source_file, FileAccess::READ);
+    ERR_FAIL_COND_V_MSG(file.is_null(), ERR_CANT_OPEN, "Cannot open source PLY file: " + p_source_file);
+
+    const String magic = file->get_line().strip_edges();
+    ERR_FAIL_COND_V_MSG(magic != "ply", ERR_FILE_UNRECOGNIZED, "Invalid PLY file format.");
+
+    int instance_count = 0;
+    bool little_endian = false;
+
+    while (!file->eof_reached()) {
+        String line = file->get_line().strip_edges();
+        if (line.begins_with("format")) {
+            ERR_FAIL_COND_V_MSG(!line.contains("binary_little_endian"), ERR_FILE_UNRECOGNIZED, "PLY file does not contain little endian data.");
+            little_endian = true;
+        } else if (line.begins_with("element vertex")) {
+            PackedStringArray parts = line.split(" ");
+            ERR_FAIL_COND_V_MSG(parts.size() < 3, ERR_FILE_UNRECOGNIZED, "PLY file contains no valid vertex count line.");
+            instance_count = parts[2].to_int();
+        } else if (line == "end_header") {
+            break;
+        }
+    }
+
+    ERR_FAIL_COND_V_MSG(instance_count <= 0 || !little_endian, ERR_FILE_UNRECOGNIZED, "PLY file contains no vertices or failed to parse count or no data format could be found");
+
     Ref<MultiMesh> multiMesh;
     multiMesh.instantiate();
     multiMesh->set_transform_format(MultiMesh::TRANSFORM_3D);
@@ -45,50 +72,42 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     multiMesh->set_use_custom_data(true);
     multiMesh->set_instance_count(1);
 
-    Basis basis = Basis(Quaternion(Vector3(1, 0, 0), Math::PI * 0.25f));
-    basis.scale(Vector3(1, 5, 1));
+    constexpr int num_coefficients = 15;
+    constexpr int bytes_per_pixel = 3 * sizeof(float);
+    Vector<uint8_t> p_data;
+    p_data.resize(1 * num_coefficients * bytes_per_pixel);
+    uint8_t *sh_texture_dest = p_data.ptrw();
+
+    constexpr int num_floats_per_splat = 59;
+    Vector<float> splat_buf;
+    splat_buf.resize(num_floats_per_splat);
+
+    file->get_buffer(reinterpret_cast<uint8_t *>(splat_buf.ptrw()), num_floats_per_splat * sizeof(float));
+    const float* raw = splat_buf.ptr();
 
     Transform3D transform;
-    transform.basis = basis;
-    transform.origin = Vector3(0, 0, 0);
+    transform.origin = Vector3(raw[0], raw[1], raw[2]);
+
+    Quaternion rot_quat(raw[8], raw[9], raw[10], raw[7]);
+    Vector3 scale(std::exp(raw[11]), std::exp(raw[12]), std::exp(raw[13]));
+
+    //basis.scale(scale);
+    transform.basis = Basis(rot_quat);
+
+
+    float alpha = 1.0f / (1.0f + std::exp(-raw[6]));
+    multiMesh->set_instance_color(0, Color(raw[3], raw[4], raw[5], alpha));
 
     multiMesh->set_instance_transform(0, transform);
     multiMesh->set_instance_color(0, Color(0.0, 0.5, 0.5, 1.0));
 
-    multiMesh->set_instance_custom_data(0, Color(1.0, 5.0, 1.0, 0.0));
+    multiMesh->set_instance_custom_data(0, Color(scale.x, scale.y, scale.z, 0.0));
 
-    int num_coefficients = 15;
-    int bytes_per_pixel = 3 * sizeof(float);
-    Vector<uint8_t> p_data;
-    p_data.resize(num_coefficients * bytes_per_pixel);
-
-    uint8_t *dst = p_data.ptrw();
     //float dummy_sh_value = 0.5f;
     // 15 Pixels of RGB data (45 floats total)
 
-    float sh_payload[45] = {
-        // L1 Coefficients (Pixels 0 to 2)
-        0.2f,  0.5f, -0.1f,   // Pixel 0 (c1)
-        0.2f,  0.5f, -0.1f,   // Pixel 1 (c2)
-        0.2f,  0.5f, -0.1f,   // Pixel 2 (c3)
-
-        // L2 Coefficients (Pixels 3 to 7)
-       -0.1f,  0.3f,  0.4f,   // Pixel 3 (c4)
-       -0.1f,  0.3f,  0.4f,   // Pixel 4 (c5)
-       -0.1f,  0.3f,  0.4f,   // Pixel 5 (c6)
-       -0.1f,  0.3f,  0.4f,   // Pixel 6 (c7)
-       -0.1f,  0.3f,  0.4f,   // Pixel 7 (c8)
-
-        // L3 Coefficients (Pixels 8 to 14)
-        0.0f, -0.2f,  0.1f,   // Pixel 8 (c9)
-        0.0f, -0.2f,  0.1f,   // Pixel 9 (c10)
-        0.0f, -0.2f,  0.1f,   // Pixel 10 (c11)
-        0.0f, -0.2f,  0.1f,   // Pixel 11 (c12)
-        0.0f, -0.2f,  0.1f,   // Pixel 12 (c13)
-        0.0f, -0.2f,  0.1f,   // Pixel 13 (c14)
-        0.0f, -0.2f,  0.1f    // Pixel 14 (c15)
-    };
-    memcpy(dst, sh_payload, num_coefficients * bytes_per_pixel);
+    float* current_row_sh = (float*)(sh_texture_dest + (0 * num_coefficients * bytes_per_pixel));
+    memcpy(current_row_sh, &raw[14], 45 * sizeof(float));
     /*for (int i = 0; i < num_coefficients * 3; ++i) {
         memcpy(dst + (i * sizeof(float)), &dummy_sh_value, sizeof(float));
     }*/
