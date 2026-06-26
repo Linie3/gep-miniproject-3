@@ -1,11 +1,14 @@
 #include "resource_importer_supersplat_ply.h"
-#include <string>
 
 #include "core/io/file_access.h"
 #include "core/io/resource_saver.h"
-#include "scene/resources/image_texture.h"
 #include "scene/resources/3d/primitive_meshes.h"
+#include "scene/resources/image_texture.h"
 #include "scene/resources/multimesh.h"
+#include "servers/rendering/rendering_device.h"
+#include "servers/rendering/rendering_server.h"
+
+#include <string>
 
 String ResourceImporterSupersplatPly::get_importer_name() const {
     return "supersplat_ply";
@@ -29,6 +32,7 @@ String ResourceImporterSupersplatPly::get_resource_type() const {
 
 void ResourceImporterSupersplatPly::get_import_options(const String &p_path, List<ImportOption> *r_options,
     int p_preset) const {
+	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "instance_count_cap"), -1));
 }
 
 bool ResourceImporterSupersplatPly::get_option_visibility(const String &p_path, const String &p_option,
@@ -65,54 +69,54 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
     ERR_FAIL_COND_V_MSG(instance_count <= 0 || !little_endian, ERR_FILE_UNRECOGNIZED, "PLY file contains no vertices or failed to parse count or no data format could be found");
 
+	if (const int instance_count_cap = p_options["instance_count_cap"]; instance_count_cap >= 0) {
+		instance_count = std::min(instance_count, instance_count_cap);
+	}
+
     Ref<MultiMesh> multiMesh;
     multiMesh.instantiate();
     multiMesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+    multiMesh->set_instance_count(0);
     multiMesh->set_use_colors(true);
     multiMesh->set_use_custom_data(true);
-    multiMesh->set_instance_count(1);
+    multiMesh->set_instance_count(instance_count);
 
     constexpr int num_coefficients = 15;
-    constexpr int bytes_per_pixel = 3 * sizeof(float);
+	constexpr int floats_per_pixel = 3;
+    constexpr int bytes_per_pixel = floats_per_pixel * sizeof(float);
     Vector<uint8_t> p_data;
-    p_data.resize(1 * num_coefficients * bytes_per_pixel);
+    p_data.resize(instance_count * num_coefficients * bytes_per_pixel);
     uint8_t *sh_texture_dest = p_data.ptrw();
 
     constexpr int num_floats_per_splat = 59;
     Vector<float> splat_buf;
     splat_buf.resize(num_floats_per_splat);
 
-    file->get_buffer(reinterpret_cast<uint8_t *>(splat_buf.ptrw()), num_floats_per_splat * sizeof(float));
-    const float* raw = splat_buf.ptr();
+	for (int i = 0; i < instance_count; ++i) {
+	    file->get_buffer(reinterpret_cast<uint8_t *>(splat_buf.ptrw()), num_floats_per_splat * sizeof(float));
+	    const float* raw = splat_buf.ptr();
 
-    Transform3D transform;
-    transform.origin = Vector3(raw[0], raw[1], raw[2]);
+	    Transform3D transform;
+	    transform.origin = Vector3(raw[0], raw[1], raw[2]);
 
-    Quaternion rot_quat(raw[8], raw[9], raw[10], raw[7]);
-    Vector3 scale(std::exp(raw[11]), std::exp(raw[12]), std::exp(raw[13]));
+		const Quaternion rot_quat(raw[8], raw[9], raw[10], raw[7]);
+		const Vector3 scale(std::exp(raw[11]), std::exp(raw[12]), std::exp(raw[13]));
 
-    //basis.scale(scale);
-    transform.basis = Basis(rot_quat);
+		Basis basis(rot_quat);
+	    //basis.scale(scale);
+	    transform.basis = basis;
 
+	    multiMesh->set_instance_color(i, Color(raw[3], raw[4], raw[5], 1.0f / (1.0f + std::exp(-raw[6]))));
 
-    float alpha = 1.0f / (1.0f + std::exp(-raw[6]));
-    multiMesh->set_instance_color(0, Color(raw[3], raw[4], raw[5], alpha));
+	    multiMesh->set_instance_transform(i, transform);
 
-    multiMesh->set_instance_transform(0, transform);
-    multiMesh->set_instance_color(0, Color(0.0, 0.5, 0.5, 1.0));
+	    multiMesh->set_instance_custom_data(i, Color(scale.x, scale.y, scale.z, 0.0));
 
-    multiMesh->set_instance_custom_data(0, Color(scale.x, scale.y, scale.z, 0.0));
+	    const auto current_row_sh = reinterpret_cast<float *>(sh_texture_dest + i * num_coefficients * bytes_per_pixel);
+	    memcpy(current_row_sh, &raw[14], 45 * sizeof(float));
+	}
 
-    //float dummy_sh_value = 0.5f;
-    // 15 Pixels of RGB data (45 floats total)
-
-    float* current_row_sh = (float*)(sh_texture_dest + (0 * num_coefficients * bytes_per_pixel));
-    memcpy(current_row_sh, &raw[14], 45 * sizeof(float));
-    /*for (int i = 0; i < num_coefficients * 3; ++i) {
-        memcpy(dst + (i * sizeof(float)), &dummy_sh_value, sizeof(float));
-    }*/
-
-    Ref<Image> image = Image::create_from_data(num_coefficients, 1, false, Image::FORMAT_RGBF, p_data);
+	const Ref<Image> image = Image::create_from_data(num_coefficients, instance_count, false, Image::FORMAT_RGBF, p_data);
 
     Ref<ImageTexture> texture;
     texture.instantiate();
@@ -146,7 +150,7 @@ varying vec4 v_custom;
 varying vec3 v_world_view_dir; // Passed from vertex
 
 void vertex() {
-v_custom = INSTANCE_CUSTOM;
+	v_custom = INSTANCE_CUSTOM;
     COLOR = COLOR;
 
     // 1. Get the instance center in View Space (Camera Relative)
