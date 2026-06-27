@@ -8,8 +8,6 @@
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server.h"
 
-#include <string>
-
 String ResourceImporterSupersplatPly::get_importer_name() const {
     return "supersplat_ply";
 }
@@ -33,6 +31,7 @@ String ResourceImporterSupersplatPly::get_resource_type() const {
 void ResourceImporterSupersplatPly::get_import_options(const String &p_path, List<ImportOption> *r_options,
     int p_preset) const {
 	r_options->push_back(ImportOption(PropertyInfo(Variant::INT, "instance_count_cap"), -1));
+	r_options->push_back(ImportOption(PropertyInfo(Variant::FLOAT, "upscale"), 1.0f));
 }
 
 bool ResourceImporterSupersplatPly::get_option_visibility(const String &p_path, const String &p_option,
@@ -89,8 +88,7 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     		}
             instance_count = parts[2].to_int();
 		} else if (typePart == "property" && valuePart == "float") {
-            String property = parts[2];
-			if (property == "x") {
+			if (String property = parts[2]; property == "x") {
 				position_begin_idx = idx;
 			} else if (property == "f_dc_0") {
 				color_begin_idx = idx;
@@ -120,6 +118,8 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 		instance_count = std::min(instance_count, instance_count_cap);
 	}
 
+	const float upscale = p_options["upscale"];
+
     Ref<MultiMesh> multiMesh;
     multiMesh.instantiate();
     multiMesh->set_transform_format(MultiMesh::TRANSFORM_3D);
@@ -145,16 +145,18 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 	    const float* raw = splat_buf.ptr();
 
 	    Transform3D transform;
-	    transform.origin = Vector3(raw[position_begin_idx], raw[position_begin_idx + 1], raw[position_begin_idx + 2]);
+	    transform.origin = Vector3(raw[position_begin_idx], raw[position_begin_idx + 1], raw[position_begin_idx + 2]) * upscale;
 
 		const Quaternion rot_quat(raw[rotation_begin_idx + 1], raw[rotation_begin_idx + 2], raw[rotation_begin_idx + 3], raw[rotation_begin_idx]);
 
 		Basis basis(rot_quat);
 	    transform.basis = basis;
 
+		Vector3 scale = Vector3(std::exp(raw[scale_begin_idx]), std::exp(raw[scale_begin_idx + 1]), std::exp(raw[scale_begin_idx + 2])) * upscale;
+
 	    multiMesh->set_instance_color(i, Color(raw[color_begin_idx], raw[color_begin_idx + 1], raw[color_begin_idx + 2], 1.0f / (1.0f + std::exp(-raw[opacity_idx]))));
 	    multiMesh->set_instance_transform(i, transform);
-	    multiMesh->set_instance_custom_data(i, Color(std::exp(raw[scale_begin_idx]), std::exp(raw[scale_begin_idx + 1]), std::exp(raw[scale_begin_idx + 2]), 0.0));
+	    multiMesh->set_instance_custom_data(i, Color(scale.x, scale.y, scale.z, i));
 
 	    const auto current_row_sh = reinterpret_cast<float *>(sh_texture_dest + i * num_coefficients * bytes_per_pixel);
 	    memcpy(current_row_sh, &raw[spherical_harmonics_begin_idx], 45 * sizeof(float));
