@@ -268,8 +268,6 @@ vec3 eval_sh(vec3 dir, vec3 dc, int id)
     float z = dir.z;
 
     // --- Spherical Harmonics Basis Functions ---
-    // L0 Basis
-    float Y0 = 0.282095;
 
     // L1 Basis
     float Y1 = 0.488603 * y;
@@ -316,7 +314,7 @@ vec3 eval_sh(vec3 dir, vec3 dc, int id)
 
     // --- Accumulate Color Contributions ---
     vec3 color =
-        dc * Y0 +
+        dc +
 
         c1 * Y3 +
         c2 * Y1 +
