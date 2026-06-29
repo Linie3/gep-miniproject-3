@@ -8,6 +8,7 @@
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server.h"
 
+#include <memory>
 #include <string>
 
 String ResourceImporterSupersplatPly::get_importer_name() const {
@@ -45,78 +46,28 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants,
     List<String> *r_gen_files, Variant *r_metadata) {
 
-	happly::PLYData plyIn("");
-
     const Ref<FileAccess> file = FileAccess::open(p_source_file, FileAccess::READ);
     ERR_FAIL_COND_V_MSG(file.is_null(), ERR_CANT_OPEN, "Cannot open source PLY file: " + p_source_file);
 
-    const String magic = file->get_line().strip_edges();
-    ERR_FAIL_COND_V_MSG(magic != "ply", ERR_FILE_UNRECOGNIZED, "Invalid PLY file format.");
+    std::unique_ptr<happly::PLYData> plyIn = std::make_unique<happly::PLYData>(file->get_path_absolute().utf8().get_data());
 
-    int instance_count = 0;
-    bool little_endian = false;
-	char position_begin_idx = -1;
-	char rotation_begin_idx = -1;
-	char scale_begin_idx = -1;
-	char color_begin_idx = -1;
-	char opacity_idx = -1;
-	char spherical_harmonics_begin_idx = -1;
+	ERR_FAIL_COND_V_MSG(plyIn->inputDataFormat != happly::DataFormat::Binary, ERR_FILE_UNRECOGNIZED, "PLY file does not contain binary little endian data.");
+	ERR_FAIL_COND_V_MSG(!plyIn->hasElement("vertex"), ERR_FILE_UNRECOGNIZED, "PLY file does not contain vertices.");
+    happly::Element& vertices = plyIn->getElement("vertex");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("x"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain position information.");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("f_dc_0"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain primary color information.");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("scale_0"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain scale information.");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("rot_0"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain rotation information.");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("f_rest_0"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain spherical harmonics information.");
+	ERR_FAIL_COND_V_MSG(!vertices.hasProperty("opacity"), ERR_FILE_UNRECOGNIZED, "Vertices do not contain opacity information.");
 
-	int idx = 0;
-	String typePart;
-    while (typePart != "end_header") {
-        String line = file->get_line().strip_edges();
-    	PackedStringArray parts = line.split(" ");
-    	int size = parts.size();
-
-    	if (size < 1) {
-    		WARN_PRINT("Invalid header line encountered: " + line);
-    		continue;
-    	}
-
-		typePart = parts[0];
-
-    	if (size < 2) {
-    		continue;
-    	}
-
-		String valuePart = parts[1];
-
-    	if (typePart == "format") {
-            ERR_FAIL_COND_V_MSG(valuePart != "binary_little_endian", ERR_FILE_UNRECOGNIZED, "PLY file does not contain binary little endian data.");
-            little_endian = true;
-    	} else if (typePart == "element" && valuePart == "vertex") {
-    		if (size < 3) {
-    			WARN_PRINT("Element line is too short: " + line);
-    			continue;
-    		}
-            instance_count = parts[2].to_int();
-		} else if (typePart == "property" && valuePart == "float") {
-			if (String property = parts[2]; property == "x") {
-				position_begin_idx = idx;
-			} else if (property == "f_dc_0") {
-				color_begin_idx = idx;
-			} else if (property == "scale_0") {
-				scale_begin_idx = idx;
-			} else if (property == "rot_0") {
-				rotation_begin_idx = idx;
-			} else if (property == "opacity") {
-				opacity_idx = idx;
-			} else if (property == "f_rest_0") {
-				spherical_harmonics_begin_idx = idx;
-			}
-    		idx++;
-		}
-    }
-
-    ERR_FAIL_COND_V_MSG(!little_endian, ERR_FILE_CORRUPT, "PLY file contains declares no data format");
-    ERR_FAIL_COND_V_MSG(instance_count <= 0, ERR_FILE_CORRUPT, "PLY file contains no vertex count");
-    ERR_FAIL_COND_V_MSG(position_begin_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no position header information");
-    ERR_FAIL_COND_V_MSG(color_begin_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no color header information");
-    ERR_FAIL_COND_V_MSG(scale_begin_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no scale header information");
-    ERR_FAIL_COND_V_MSG(opacity_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no opacity header information");
-    ERR_FAIL_COND_V_MSG(rotation_begin_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no rotation header information");
-    ERR_FAIL_COND_V_MSG(spherical_harmonics_begin_idx < 0, ERR_FILE_CORRUPT, "PLY file contains no spherical header information");
+    int instance_count = vertices.count;
+	char position_begin_idx = vertices.getPropertyPtr("x")->position;
+	char rotation_begin_idx = vertices.getPropertyPtr("rot_0")->position;
+	char scale_begin_idx = vertices.getPropertyPtr("scale_0")->position;
+	char color_begin_idx = vertices.getPropertyPtr("f_dc_0")->position;
+	char opacity_idx = vertices.getPropertyPtr("opacity")->position;
+	char spherical_harmonics_begin_idx = vertices.getPropertyPtr("f_rest_0")->position;
 
 	if (const int instance_count_cap = p_options["instance_count_cap"]; instance_count_cap >= 0) {
 		instance_count = std::min(instance_count, instance_count_cap);
@@ -169,6 +120,11 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 	AABB total_aabb;
 	bool first_aabb = true;
 
+	String line;
+	while (line != "end_header") {
+		line = file->get_line();
+	}
+
 	for (int i = 0; i < instance_count; ++i) {
 	    file->get_buffer(reinterpret_cast<uint8_t *>(splat_buf.ptrw()), num_floats_per_splat * sizeof(float));
 	    const float* raw = splat_buf.ptr();
@@ -209,7 +165,7 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
     Ref<QuadMesh> mesh;
     mesh.instantiate();
-    mesh->set_size(Vector2(1.0f, 1.0f));
+    mesh->set_size(Vector2(2.0f, 2.0f));
     mesh->set_material(material);
 
     multi_mesh->set_mesh(mesh);
@@ -266,9 +222,9 @@ void vertex() {
 
     // 5. Extract the 2D Screen-Space Ellipse Bounds
     // Ensure safety filters to prevent infinite thinness or collapsing lines
-    float cov_xx = sigma2D[0][0] + 0.05;
+    float cov_xx = sigma2D[0][0] + 1e-6;
     float cov_xy = sigma2D[0][1];
-    float cov_yy = sigma2D[1][1] + 0.05;
+    float cov_yy = sigma2D[1][1] + 1e-6;
 
     // Solve eigenvalues for 2D tilt/stretch factors
     float det = cov_xx * cov_yy - cov_xy * cov_xy;
