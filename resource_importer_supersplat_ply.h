@@ -4,6 +4,8 @@
 #include "core/io/resource_importer.h"
 #include "scene/resources/material.h"
 
+#include <happly.cpp>
+
 class ResourceImporterSupersplatPly : public ResourceImporter {
 	GDCLASS(ResourceImporterSupersplatPly, ResourceImporter);
 

@@ -1,5 +1,34 @@
-# SCsub
+#!/usr/bin/env python
+from misc.utility.scons_hints import *
 
-Import('env')
+Import("env")
+Import("env_modules")
 
-env.add_source_files(env.modules_sources, "*.cpp") # Add all cpp files to the build
+env_ws = env_modules.Clone()
+
+thirdparty_obj = []
+
+# Thirdparty source files
+thirdparty_dir = "#thirdparty/libply/"
+thirdparty_sources = [
+    "happly.cpp",
+]
+thirdparty_sources = [thirdparty_dir + s for s in thirdparty_sources]
+
+env_ws.Prepend(CPPPATH=[thirdparty_dir])
+
+env_thirdparty = env_ws.Clone()
+env_thirdparty.disable_warnings()
+env_thirdparty.add_source_files(thirdparty_obj, thirdparty_sources)
+env.modules_sources += thirdparty_obj
+
+
+# Godot source files
+
+module_obj = []
+
+env_ws.add_source_files(module_obj, "*.cpp")
+env.modules_sources += module_obj
+
+# Needed to force rebuilding the module files when the thirdparty library is updated.
+env.Depends(module_obj, thirdparty_obj)

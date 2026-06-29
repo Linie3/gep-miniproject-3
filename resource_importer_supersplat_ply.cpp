@@ -45,6 +45,8 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     const String &p_save_path, const HashMap<StringName, Variant> &p_options, List<String> *r_platform_variants,
     List<String> *r_gen_files, Variant *r_metadata) {
 
+	happly::PLYData plyIn("");
+
     const Ref<FileAccess> file = FileAccess::open(p_source_file, FileAccess::READ);
     ERR_FAIL_COND_V_MSG(file.is_null(), ERR_CANT_OPEN, "Cannot open source PLY file: " + p_source_file);
 

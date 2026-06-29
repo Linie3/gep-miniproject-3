@@ -20,3 +20,18 @@ kompilierte binaRy auswählen
 Run as administrator
 
 scons compiledb=yes compile_commands.json to update intellisense
+
+## Libply
+
+Thirdparty lib to read ply headers. Add following to `thirdparty/README` and then put extracted files into `thirdparty/libply/:
+
+```markdown
+- Upstream: https://github.com/nmwsharp/happly/
+- Version: 1.1.0 (ed5480454d15e5287370eadc3682e9d40ba395e1, 2026)
+- License: MIT
+
+Files extracted from upstream source:
+
+- `happly.h`
+- `LICENSE`
+```
