@@ -8,6 +8,8 @@
 #include "servers/rendering/rendering_device.h"
 #include "servers/rendering/rendering_server.h"
 
+#include <string>
+
 String ResourceImporterSupersplatPly::get_importer_name() const {
     return "supersplat_ply";
 }
@@ -120,23 +122,46 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
 	const float upscale = p_options["upscale"];
 
-    Ref<MultiMesh> multiMesh;
-    multiMesh.instantiate();
-    multiMesh->set_transform_format(MultiMesh::TRANSFORM_3D);
-    multiMesh->set_instance_count(0);
-    multiMesh->set_use_colors(true);
-    multiMesh->set_use_custom_data(true);
-    multiMesh->set_instance_count(instance_count);
-
-    constexpr int num_coefficients = 15;
-	constexpr int floats_per_pixel = 3;
+	constexpr int floats_per_coefficient = 3; //3-dimensional coefficients
+	constexpr int floats_per_pixel = 3; //RGBF texture
+    constexpr int pixel_per_coefficient = floats_per_coefficient / floats_per_pixel;
+    constexpr int num_coefficients = 3 + 5 + 7; // First 3 order of spherical harmonials
+    constexpr int pixels_per_splat_sh = num_coefficients * pixel_per_coefficient;
     constexpr int bytes_per_pixel = floats_per_pixel * sizeof(float);
-    constexpr int num_floats_per_splat = 59;
+
+	RenderingDevice *rendering_device = RenderingServer::get_singleton()->get_rendering_device();
+
+	const int max_pixels_per_dimension = rendering_device->limit_get(RenderingDevice::LIMIT_MAX_TEXTURE_SIZE_2D);
+	const int max_coefficients_per_row = max_pixels_per_dimension / pixel_per_coefficient;
+	const int max_splat_sh_per_row = max_coefficients_per_row / num_coefficients;
+	const int max_splat_sh = max_pixels_per_dimension * max_splat_sh_per_row;
+
+	if (max_splat_sh < instance_count) {
+		WARN_PRINT(("Too many splats in model, discarded last " + std::to_string(instance_count - max_splat_sh) + " splats").c_str());
+		instance_count = instance_count - max_splat_sh;
+	}
+
+
+    Ref<MultiMesh> multi_mesh;
+    multi_mesh.instantiate();
+    multi_mesh->set_transform_format(MultiMesh::TRANSFORM_3D);
+    multi_mesh->set_instance_count(0);
+    multi_mesh->set_use_colors(true);
+    multi_mesh->set_use_custom_data(true);
+    multi_mesh->set_instance_count(instance_count);
+
+	//const int splat_sh_size_bytes = instance_count * bytes_per_splat_sh;
+	const int splat_sh_size_pixels = instance_count * pixels_per_splat_sh;
+	const int min_pixels_per_row = std::ceil(std::sqrt(static_cast<double>(instance_count * pixels_per_splat_sh)));
+	const int pixels_per_row = ((min_pixels_per_row + pixels_per_splat_sh - 1) / pixels_per_splat_sh) * pixels_per_splat_sh;
+	const int splat_sh_per_row = pixels_per_row / pixels_per_splat_sh;
+	const int pixels_per_column = std::ceil(static_cast<double>(splat_sh_size_pixels) / pixels_per_row);
 
     Vector<uint8_t> p_data;
-    p_data.resize(instance_count * num_coefficients * bytes_per_pixel);
+    p_data.resize(pixels_per_row * pixels_per_column * bytes_per_pixel); // Reserve whole cube size, including empty buffer after last sh
     uint8_t *sh_texture_dest = p_data.ptrw();
 
+    constexpr int num_floats_per_splat = num_coefficients * floats_per_coefficient + 14;
     Vector<float> splat_buf;
     splat_buf.resize(num_floats_per_splat);
 
@@ -154,15 +179,15 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
 		Vector3 scale = Vector3(std::exp(raw[scale_begin_idx]), std::exp(raw[scale_begin_idx + 1]), std::exp(raw[scale_begin_idx + 2])) * upscale;
 
-	    multiMesh->set_instance_color(i, Color(raw[color_begin_idx], raw[color_begin_idx + 1], raw[color_begin_idx + 2], 1.0f / (1.0f + std::exp(-raw[opacity_idx]))));
-	    multiMesh->set_instance_transform(i, transform);
-	    multiMesh->set_instance_custom_data(i, Color(scale.x, scale.y, scale.z, i));
+	    multi_mesh->set_instance_color(i, Color(raw[color_begin_idx], raw[color_begin_idx + 1], raw[color_begin_idx + 2], 1.0f / (1.0f + std::exp(-raw[opacity_idx]))));
+	    multi_mesh->set_instance_transform(i, transform);
+	    multi_mesh->set_instance_custom_data(i, Color(scale.x, scale.y, scale.z, i));
 
 	    const auto current_row_sh = reinterpret_cast<float *>(sh_texture_dest + i * num_coefficients * bytes_per_pixel);
 	    memcpy(current_row_sh, &raw[spherical_harmonics_begin_idx], 45 * sizeof(float));
 	}
 
-	const Ref<Image> image = Image::create_from_data(num_coefficients, instance_count, false, Image::FORMAT_RGBF, p_data);
+	const Ref<Image> image = Image::create_from_data(pixels_per_row, pixels_per_column, false, Image::FORMAT_RGBF, p_data);
 
     Ref<ImageTexture> texture;
     texture.instantiate();
@@ -174,9 +199,9 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     mesh->set_size(Vector2(1.0f, 1.0f));
     mesh->set_material(material);
 
-    multiMesh->set_mesh(mesh);
+    multi_mesh->set_mesh(mesh);
 
-    const Error err = ResourceSaver::save(multiMesh, p_save_path + ".multimesh", 0);
+    const Error err = ResourceSaver::save(multi_mesh, p_save_path + ".multimesh", 0);
     ERR_FAIL_COND_V_MSG(err != OK, err, "Cannot save supersplat multimesh to file \"" + p_save_path + ".res\".");
 
     return OK;
