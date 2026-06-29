@@ -154,7 +154,6 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 	const int splat_sh_size_pixels = instance_count * pixels_per_splat_sh;
 	const int min_pixels_per_row = std::ceil(std::sqrt(static_cast<double>(instance_count * pixels_per_splat_sh)));
 	const int pixels_per_row = ((min_pixels_per_row + pixels_per_splat_sh - 1) / pixels_per_splat_sh) * pixels_per_splat_sh;
-	const int splat_sh_per_row = pixels_per_row / pixels_per_splat_sh;
 	const int pixels_per_column = std::ceil(static_cast<double>(splat_sh_size_pixels) / pixels_per_row);
 
     Vector<uint8_t> p_data;
@@ -164,6 +163,9 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
     constexpr int num_floats_per_splat = num_coefficients * floats_per_coefficient + 14;
     Vector<float> splat_buf;
     splat_buf.resize(num_floats_per_splat);
+
+	AABB total_aabb;
+	bool first_aabb = true;
 
 	for (int i = 0; i < instance_count; ++i) {
 	    file->get_buffer(reinterpret_cast<uint8_t *>(splat_buf.ptrw()), num_floats_per_splat * sizeof(float));
@@ -179,6 +181,13 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
 		Vector3 scale = Vector3(std::exp(raw[scale_begin_idx]), std::exp(raw[scale_begin_idx + 1]), std::exp(raw[scale_begin_idx + 2])) * upscale;
 
+		if (first_aabb) {
+			total_aabb = AABB(transform.origin, Vector3(0.01, 0.01, 0.01));
+			first_aabb = false;
+		} else {
+			total_aabb.expand_to(transform.origin);
+		}
+
 	    multi_mesh->set_instance_color(i, Color(raw[color_begin_idx], raw[color_begin_idx + 1], raw[color_begin_idx + 2], 1.0f / (1.0f + std::exp(-raw[opacity_idx]))));
 	    multi_mesh->set_instance_transform(i, transform);
 	    multi_mesh->set_instance_custom_data(i, Color(scale.x, scale.y, scale.z, i));
@@ -186,6 +195,8 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 	    const auto current_row_sh = reinterpret_cast<float *>(sh_texture_dest + i * num_coefficients * bytes_per_pixel);
 	    memcpy(current_row_sh, &raw[spherical_harmonics_begin_idx], 45 * sizeof(float));
 	}
+
+	multi_mesh->set_custom_aabb(total_aabb);
 
 	const Ref<Image> image = Image::create_from_data(pixels_per_row, pixels_per_column, false, Image::FORMAT_RGBF, p_data);
 
@@ -377,6 +388,10 @@ void fragment()
     float gaussian_weight = exp(-4.0 * d_squared);
 
     ALPHA = COLOR.a * gaussian_weight;
+
+	if (ALPHA < 0.05) {
+        discard;
+    }
 }
     )");
 
