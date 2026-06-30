@@ -80,10 +80,10 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 
 		const float upscale = p_options["upscale"];
 
-		constexpr int floats_per_coefficient = 3; //3-dimensional coefficients
-		constexpr int floats_per_pixel = 3; //RGBF texture
+		constexpr int floats_per_coefficient = 3;
+		constexpr int floats_per_pixel = 3;
 	    constexpr int pixel_per_coefficient = floats_per_coefficient / floats_per_pixel;
-	    constexpr int num_coefficients = 3 + 5 + 7; // First 3 order of spherical harmonials
+	    constexpr int num_coefficients = 3 + 5 + 7;
 	    constexpr int pixels_per_splat_sh = num_coefficients * pixel_per_coefficient;
 	    constexpr int bytes_per_pixel = floats_per_pixel * sizeof(float);
 
@@ -108,7 +108,6 @@ Error ResourceImporterSupersplatPly::import(ResourceUID::ID p_source_id, const S
 	    multi_mesh->set_use_custom_data(true);
 	    multi_mesh->set_instance_count(instance_count);
 
-		//const int splat_sh_size_bytes = instance_count * bytes_per_splat_sh;
 		const int splat_sh_size_pixels = instance_count * pixels_per_splat_sh;
 		const int min_pixels_per_row = std::ceil(std::sqrt(static_cast<double>(instance_count * pixels_per_splat_sh)));
 		const int pixels_per_row = ((min_pixels_per_row + pixels_per_splat_sh - 1) / pixels_per_splat_sh) * pixels_per_splat_sh;
@@ -202,14 +201,12 @@ void vertex() {
 	v_custom = INSTANCE_CUSTOM;
     COLOR = COLOR;
 
-    // 1. Get the instance center in View Space (Camera Relative)
     vec4 instance_view_pos = VIEW_MATRIX * MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0);
 
-    // Pass raw world view direction for the SH color module
     vec3 instance_world_pos = (MODEL_MATRIX * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
     v_world_view_dir = CAMERA_POSITION_WORLD - instance_world_pos;
 
-    // 2. Extract full 3D Scale and World Rotation from the Model Matrix
+	// Extract Scale and Rotation
     vec3 scale = INSTANCE_CUSTOM.rgb;
     mat3 R = mat3(
         normalize(MODEL_MATRIX[0].xyz),
@@ -217,7 +214,6 @@ void vertex() {
         normalize(MODEL_MATRIX[2].xyz)
     );
 
-    // 3. Compute the 3D Covariance Matrix (Sigma = R * S * S^T * R^T)
     mat3 S = mat3(
         vec3(scale.x * scale.x, 0.0, 0.0),
         vec3(0.0, scale.y * scale.y, 0.0),
@@ -225,41 +221,32 @@ void vertex() {
     );
     mat3 sigma3D = R * S * transpose(R);
 
-    // 4. Project the 3D Covariance Matrix into 2D Camera View Space
     mat3 W = mat3(VIEW_MATRIX);
     mat3 sigma2D = W * sigma3D * transpose(W);
 
-    // 5. Extract the 2D Screen-Space Ellipse Bounds
-    // Ensure safety filters to prevent infinite thinness or collapsing lines
+	// Covariance
     float cov_xx = sigma2D[0][0] + 1e-6;
     float cov_xy = sigma2D[0][1];
     float cov_yy = sigma2D[1][1] + 1e-6;
 
-    // Solve eigenvalues for 2D tilt/stretch factors
     float det = cov_xx * cov_yy - cov_xy * cov_xy;
     float mid = 0.5 * (cov_xx + cov_yy);
     float lambda1 = mid + sqrt(max(0.0, mid * mid - det));
     float lambda2 = mid - sqrt(max(0.0, mid * mid - det));
 
-    // Calculate major/minor radii of the screen ellipse footprint
-    // 2.0x multiplier aligns it nicely with our QuadMesh boundaries
     float radius_x = sqrt(max(0.001, lambda1)) * 2.0;
     float radius_y = sqrt(max(0.001, lambda2)) * 2.0;
 
-    // Compute 2D screen rotation angle
     float angle = 0.5 * atan(2.0 * cov_xy, cov_xx - cov_yy);
     mat2 rot2D = mat2(
         vec2(cos(angle), -sin(angle)),
         vec2(sin(angle),  cos(angle))
     );
 
-    // 6. Apply deformation to our local flat quad layout
+	// Billboarding
     vec2 local_deformed = rot2D * (VERTEX.xy * vec2(radius_x, radius_y));
     vec3 billboarded_vertex = vec3(local_deformed, 0.0);
 
-    // 7. CRITICAL FIX: Bypass Godot's vertex double-multiplication trap!
-    // We compute the final position in View Space and transform it directly
-    // to Clip Space using PROJECTION_MATRIX, skipping local-space alterations.
     vec3 final_view_pos = instance_view_pos.xyz + billboarded_vertex;
     POSITION = PROJECTION_MATRIX * vec4(final_view_pos, 1.0);
 }
@@ -270,8 +257,7 @@ vec3 eval_sh(vec3 dir, vec3 dc, int id)
     float y = dir.y;
     float z = dir.z;
 
-    // --- Spherical Harmonics Basis Functions ---
-
+    // Spherical Harmonics Basis Functions
     // L1 Basis
     float Y1 = 0.488603 * y;
     float Y2 = 0.488603 * z;
@@ -293,20 +279,20 @@ vec3 eval_sh(vec3 dir, vec3 dc, int id)
     float Y14 = 1.445306 * (x * x - y * y) * z;
     float Y15 = 0.590044 * x * (x * x - 3.0 * y * y);
 
-    // --- Zero-Overhead Texture Fetches ---
-    // Read the 3 RGB vectors for L1 (Pixels 0-2)
+    // Read sh values
+	// L1
     vec3 c1 = texelFetch(sh_tex, ivec2(0, id), 0).rgb;
     vec3 c2 = texelFetch(sh_tex, ivec2(1, id), 0).rgb;
     vec3 c3 = texelFetch(sh_tex, ivec2(2, id), 0).rgb;
 
-    // Read the 5 RGB vectors for L2 (Pixels 3-7)
+	// L2
     vec3 c4 = texelFetch(sh_tex, ivec2(3, id), 0).rgb;
     vec3 c5 = texelFetch(sh_tex, ivec2(4, id), 0).rgb;
     vec3 c6 = texelFetch(sh_tex, ivec2(5, id), 0).rgb;
     vec3 c7 = texelFetch(sh_tex, ivec2(6, id), 0).rgb;
     vec3 c8 = texelFetch(sh_tex, ivec2(7, id), 0).rgb;
 
-    // Read the 7 RGB vectors for L3 (Pixels 8-14)
+	// L3
     vec3 c9  = texelFetch(sh_tex, ivec2(8, id), 0).rgb;
     vec3 c10 = texelFetch(sh_tex, ivec2(9, id), 0).rgb;
     vec3 c11 = texelFetch(sh_tex, ivec2(10, id), 0).rgb;
@@ -315,7 +301,7 @@ vec3 eval_sh(vec3 dir, vec3 dc, int id)
     vec3 c14 = texelFetch(sh_tex, ivec2(13, id), 0).rgb;
     vec3 c15 = texelFetch(sh_tex, ivec2(14, id), 0).rgb;
 
-    // --- Accumulate Color Contributions ---
+    // sh Color Contributions
     vec3 color =
         dc +
 
